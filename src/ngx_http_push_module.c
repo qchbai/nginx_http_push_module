@@ -88,8 +88,15 @@ static ngx_str_t * ngx_http_push_get_channel_id(ngx_http_request_t *r, ngx_http_
   return id;
 }
 
-#define NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, pool)  \
-    if(((content_type) = ngx_palloc(pool, sizeof(*content_type)+content_type_len))!=NULL) { \
+#define NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, pool)   \
+    size_t ctype_size = sizeof(*content_type)+content_type_len;                      \
+    if (NULL == pool) {                                                              \
+        content_type = ngx_alloc(ctype_size, ngx_cycle->log);                        \
+    }                                                                                \
+    else {                                                                           \
+        content_type = ngx_palloc(pool, ctype_size);                                 \
+    }                                                                                \
+    if(content_type != NULL) {                                                       \
         (content_type)->len=content_type_len;                                        \
         (content_type)->data=(u_char *)((content_type)+1);                           \
         ngx_memcpy(content_type->data, (msg)->content_type.data, content_type_len);  \
@@ -247,7 +254,7 @@ static ngx_int_t ngx_http_push_subscriber_handler(ngx_http_request_t *r) {
       ngx_http_push_store_local.lock();
       content_type_len = msg->content_type.len;
       if(content_type_len>0) {
-        NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, r->pool);
+        NGX_HTTP_PUSH_MAKE_CONTENT_TYPE(content_type, content_type_len, msg, NULL);
         if(content_type==NULL) {
           ngx_http_push_store_local.unlock();
           ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate memory for content-type header while responding to subscriber request");
@@ -495,11 +502,11 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
     
     ngx_http_push_store_local.lock();
     //preallocate output chain. this won't actually be used in the request (except the buffer data)
-    chain = ngx_http_push_create_output_chain(msg->buf, ngx_http_push_pool, ngx_cycle->log);
+    chain = ngx_http_push_create_output_chain(msg->buf, NULL, ngx_cycle->log);
     ngx_http_push_store_local.unlock();
     if(chain==NULL) {
-      ngx_pfree(ngx_http_push_pool, etag);
-      ngx_pfree(ngx_http_push_pool, content_type);
+      ngx_free(etag);
+      ngx_free(content_type);
       ngx_log_error(NGX_LOG_ERR, ngx_cycle->log, 0, "push module: unable to create output chain while responding to several subscriber request");
       return NGX_ERROR;
     }
@@ -511,7 +518,7 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
     last_modified_time = msg->message_time;
     ngx_http_push_store_local.unlock();
 
-    buf_use_count = ngx_pcalloc(ngx_http_push_pool, sizeof(*buf_use_count));
+    buf_use_count = ngx_alloc(sizeof(*buf_use_count), ngx_cycle->log);
     *buf_use_count = ngx_http_push_store_local.channel_worker_subscribers(sentinel);
     
     cur=(ngx_http_push_subscriber_t *)ngx_queue_head(&sentinel->queue);
@@ -545,14 +552,15 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
       responded_subscribers++;
       
       //done with this subscriber. free the sucker.
-      ngx_pfree(ngx_http_push_pool, cur);
+      ngx_free(cur);
 
       cur=next;
     }
     
-    ngx_pfree(ngx_http_push_pool, etag);
-    ngx_pfree(ngx_http_push_pool, content_type);
-    ngx_pfree(ngx_http_push_pool, chain);
+    ngx_free(etag);
+    ngx_free(content_type);
+    ngx_free(chain);
+
     //the rest will be deallocated on request pool cleanup
     
     if(responded_subscribers) {
@@ -571,7 +579,7 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
       ngx_http_push_subscriber_clear_ctx(cur);
       ngx_http_finalize_request(r, ngx_http_push_respond_status_only(r, status_code, status_line));
       responded_subscribers++;
-      ngx_pfree(ngx_http_push_pool, cur);
+      ngx_free(cur);
       cur=next;
     }
   }
@@ -579,7 +587,7 @@ static ngx_int_t ngx_http_push_respond_to_subscribers(ngx_http_push_channel_t *c
   channel->subscribers-=responded_subscribers;
   //is the message still needed?
   //ngx_log_error(NGX_LOG_WARN, ngx_cycle->log, 0, "deleting subscriber sentinel at %p.", sentinel);
-  ngx_pfree(ngx_http_push_pool, sentinel);
+  ngx_free(sentinel);
   ngx_http_push_store_local.unlock();
   return NGX_OK;
 }
@@ -760,17 +768,26 @@ static ngx_str_t * ngx_http_push_subscriber_get_etag(ngx_http_request_t * r) {
   return NULL;
 }
 
+void *ngx_push_pcalloc(ngx_pool_t *pool, size_t size) {
+    if (NULL == pool) {
+        return ngx_calloc(size, ngx_cycle->log);
+    }
+    else {
+        return ngx_pcalloc(pool, size);
+    }
+}
+
 //buffer is _copied_
 static ngx_chain_t * ngx_http_push_create_output_chain(ngx_buf_t *buf, ngx_pool_t *pool, ngx_log_t *log) {
   ngx_chain_t                    *out;
   ngx_file_t                     *file;
   
-  if((out = ngx_pcalloc(pool, sizeof(*out)))==NULL) {
+  if((out = ngx_push_pcalloc(pool, sizeof(*out)))==NULL) {
     return NULL;
   }
   ngx_buf_t                      *buf_copy;
 
-  if((buf_copy = ngx_pcalloc(pool, NGX_HTTP_BUF_ALLOC_SIZE(buf)))==NULL) {
+  if((buf_copy = ngx_push_pcalloc(pool, NGX_HTTP_BUF_ALLOC_SIZE(buf)))==NULL) {
     return NULL;
   }
   ngx_http_push_copy_preallocated_buffer(buf, buf_copy);
@@ -796,7 +813,7 @@ static void ngx_http_push_subscriber_cleanup(ngx_http_push_subscriber_cleanup_t 
     ngx_http_push_subscriber_t* sb = data->subscriber;
     ngx_http_push_subscriber_del_timer(sb);
     ngx_queue_remove(&data->subscriber->queue);
-    ngx_pfree(ngx_http_push_pool, data->subscriber); //was there an error? oh whatever.
+    ngx_free(data->subscriber);; //was there an error? oh whatever.
   }
   if (data->rchain != NULL) {
     ngx_pfree(data->rpool, data->rchain->buf);
@@ -805,12 +822,12 @@ static void ngx_http_push_subscriber_cleanup(ngx_http_push_subscriber_cleanup_t 
   }
   if(data->buf_use_count != NULL && --(*data->buf_use_count) <= 0) {
     ngx_buf_t                      *buf;
-    ngx_pfree(ngx_http_push_pool, data->buf_use_count);
+    ngx_free(data->buf_use_count);
     buf=data->buf;
     if(buf->file) {
       ngx_close_file(buf->file->fd);
     }
-    ngx_pfree(ngx_http_push_pool, buf);
+    ngx_free(buf);
   }
   
   if(data->channel!=NULL) { //we're expected to decrement the subscriber count

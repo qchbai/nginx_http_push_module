@@ -1,6 +1,12 @@
 //fuck it, copypaste
 #define NGX_HTTP_PUSH_MAKE_ETAG(message_tag, etag, alloc_func, pool)                 \
-    etag = alloc_func(pool, sizeof(*etag) + NGX_INT_T_LEN);                          \
+    size_t tagsize = sizeof(*etag) + NGX_INT_T_LEN;                                  \
+    if (NULL == pool) {                                                              \
+        etag = ngx_calloc(tagsize, ngx_cycle->log);                                  \
+    }                                                                                \
+    else {                                                                           \
+        etag = alloc_func(pool, tagsize);                                            \
+    }                                                                                \
     if(etag!=NULL) {                                                                 \
         etag->data = (u_char *)(etag+1);                                             \
         etag->len = ngx_sprintf(etag->data,"%ui", message_tag)- etag->data;          \
@@ -472,7 +478,7 @@ static ngx_http_push_subscriber_t * ngx_http_push_store_subscribe(ngx_http_push_
     found->slot=ngx_process_slot;
     found->subscriber_sentinel=NULL;
   }
-  if((subscriber = ngx_palloc(ngx_http_push_pool, sizeof(*subscriber)))==NULL) { //unable to allocate request queue element
+  if((subscriber = ngx_alloc(sizeof(*subscriber), ngx_cycle->log))==NULL) { //unable to allocate request queue element
     ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate subscriber worker's memory pool");
     return NULL;
@@ -485,7 +491,7 @@ static ngx_http_push_subscriber_t * ngx_http_push_store_subscribe(ngx_http_push_
   
   if(subscriber_sentinel==NULL) {
     //it's perfectly normal for the sentinel to be NULL.
-    if((subscriber_sentinel=ngx_palloc(ngx_http_push_pool, sizeof(*subscriber_sentinel)))==NULL) {
+      if((subscriber_sentinel=ngx_alloc(sizeof(*subscriber_sentinel), ngx_cycle->log))==NULL) {
       ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "push module: unable to allocate channel subscriber sentinel");
       return NULL;
     }
@@ -504,7 +510,7 @@ static ngx_http_push_subscriber_t * ngx_http_push_store_subscribe(ngx_http_push_
 static ngx_str_t * ngx_http_push_store_etag_from_message(ngx_http_push_msg_t *msg){
   ngx_str_t *etag;
   ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
-  NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_palloc, ngx_http_push_pool);
+  NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_palloc, NULL);
   ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
   return etag;
 }
@@ -512,7 +518,7 @@ static ngx_str_t * ngx_http_push_store_etag_from_message(ngx_http_push_msg_t *ms
 static ngx_str_t * ngx_http_push_store_content_type_from_message(ngx_http_push_msg_t *msg){
   ngx_str_t *etag;
   ngx_shmtx_lock(&ngx_http_push_shpool->mutex);
-  NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_palloc, ngx_http_push_pool);
+  NGX_HTTP_PUSH_MAKE_ETAG(msg->message_tag, etag, ngx_palloc, NULL);
   ngx_shmtx_unlock(&ngx_http_push_shpool->mutex);
   return etag;
 }
